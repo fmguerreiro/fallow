@@ -413,8 +413,7 @@ fn unlisted_dep_detected_across_multiple_files() {
 fn vitest_mocks_package_not_reported_as_unlisted_via_suffix() {
     // Imports like `@aws-sdk/__mocks__` should not be flagged when Vitest plugin
     // contributes `/__mocks__` as a virtual package suffix.
-    let (graph, resolved_modules) =
-        build_graph_with_npm_imports(&[("@aws-sdk/__mocks__", false)]);
+    let (graph, resolved_modules) = build_graph_with_npm_imports(&[("@aws-sdk/__mocks__", false)]);
     let pkg = make_pkg(&[], &["vitest"], &[]);
     let config = test_config(PathBuf::from("/project"));
     let line_offsets: LineOffsetsMap<'_> = FxHashMap::default();
@@ -435,15 +434,16 @@ fn vitest_mocks_package_not_reported_as_unlisted_via_suffix() {
     );
 
     assert!(
-        !unlisted.iter().any(|d| d.package_name == "@aws-sdk/__mocks__"),
+        !unlisted
+            .iter()
+            .any(|d| d.package_name == "@aws-sdk/__mocks__"),
         "@aws-sdk/__mocks__ should not be flagged as unlisted when /__mocks__ suffix is registered"
     );
 }
 
 #[test]
 fn plain_mocks_package_not_reported_as_unlisted_via_suffix() {
-    let (graph, resolved_modules) =
-        build_graph_with_npm_imports(&[("some-pkg/__mocks__", false)]);
+    let (graph, resolved_modules) = build_graph_with_npm_imports(&[("some-pkg/__mocks__", false)]);
     let pkg = make_pkg(&[], &[], &[]);
     let config = test_config(PathBuf::from("/project"));
     let line_offsets: LineOffsetsMap<'_> = FxHashMap::default();
@@ -464,7 +464,9 @@ fn plain_mocks_package_not_reported_as_unlisted_via_suffix() {
     );
 
     assert!(
-        !unlisted.iter().any(|d| d.package_name == "some-pkg/__mocks__"),
+        !unlisted
+            .iter()
+            .any(|d| d.package_name == "some-pkg/__mocks__"),
         "some-pkg/__mocks__ should not be flagged as unlisted when /__mocks__ suffix is registered"
     );
 }

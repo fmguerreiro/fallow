@@ -1600,7 +1600,11 @@ mod tests {
             &FxHashMap::default(),
             &resolved_modules,
         );
-        assert_eq!(result.len(), 1, "unrelated modules both exporting 'helper' must be flagged");
+        assert_eq!(
+            result.len(),
+            1,
+            "unrelated modules both exporting 'helper' must be flagged"
+        );
         assert_eq!(result[0].export_name, "helper");
     }
 

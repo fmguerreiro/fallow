@@ -156,7 +156,9 @@ fn extract_eslint_config(
     // tree to find packages hoisted to the monorepo root node_modules.
     for imp in &imports {
         let pkg_name = crate::resolve::extract_package_name(imp);
-        if let Some((entry_source, entry_path)) = read_package_entry_for_specifier(root, imp, &pkg_name) {
+        if let Some((entry_source, entry_path)) =
+            read_package_entry_for_specifier(root, imp, &pkg_name)
+        {
             let nested = config_parser::extract_imports(&entry_source, &entry_path);
             for nested_imp in &nested {
                 result
@@ -377,7 +379,11 @@ fn read_package_entry_for_specifier(
 /// Falls back to `module` → `main` → `index.js` when no exports map is present.
 /// For non-root subpaths without an exports map entry, tries the key as a relative
 /// file path within the package directory.
-fn resolve_package_entry(pkg_json: &serde_json::Value, subpath_key: &str, pkg_dir: &Path) -> String {
+fn resolve_package_entry(
+    pkg_json: &serde_json::Value,
+    subpath_key: &str,
+    pkg_dir: &Path,
+) -> String {
     if let Some(exports) = pkg_json.get("exports") {
         if let Some(rel) = resolve_exports_subpath(exports, subpath_key) {
             return rel;
@@ -848,11 +854,7 @@ mod tests {
         )
         .unwrap();
         // main entry does NOT import eslint-plugin-react
-        std::fs::write(
-            shared_pkg_dir.join("index.js"),
-            r"export default [];",
-        )
-        .unwrap();
+        std::fs::write(shared_pkg_dir.join("index.js"), r"export default [];").unwrap();
         // /next subpath DOES import eslint-plugin-react
         std::fs::write(
             shared_pkg_dir.join("next.js"),
