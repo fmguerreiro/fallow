@@ -384,10 +384,10 @@ fn resolve_package_entry(
     subpath_key: &str,
     pkg_dir: &Path,
 ) -> String {
-    if let Some(exports) = pkg_json.get("exports") {
-        if let Some(rel) = resolve_exports_subpath(exports, subpath_key) {
-            return rel;
-        }
+    if let Some(exports) = pkg_json.get("exports")
+        && let Some(rel) = resolve_exports_subpath(exports, subpath_key)
+    {
+        return rel;
     }
 
     if subpath_key == "." {
