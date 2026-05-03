@@ -9,7 +9,7 @@ use std::path::Path;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::{parse_script, resolve_binary_to_package};
+use super::{looks_like_file_path, parse_script, resolve_binary_to_package};
 
 /// Result of scanning CI config files: package names used by CI tooling AND
 /// project-relative file paths referenced as command-line arguments.
@@ -86,8 +86,15 @@ fn extract_ci_signals(
                 let pkg = resolve_binary_to_package(&cmd.binary, root, bin_map);
                 analysis.used_packages.insert(pkg);
             }
-            analysis.entry_files.extend(cmd.config_args);
-            analysis.entry_files.extend(cmd.file_args);
+            // Filter through `looks_like_file_path` so quoted shell tokens that
+            // `parse_script` classifies as args (e.g. jq array iterators `'.[]'`,
+            // bash `[[ ]]` test expressions) never reach globset compilation.
+            analysis
+                .entry_files
+                .extend(cmd.config_args.into_iter().filter(|s| looks_like_file_path(s)));
+            analysis
+                .entry_files
+                .extend(cmd.file_args.into_iter().filter(|s| looks_like_file_path(s)));
         }
     }
 }
