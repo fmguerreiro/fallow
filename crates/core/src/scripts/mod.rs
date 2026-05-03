@@ -343,6 +343,13 @@ fn is_env_assignment(token: &str) -> bool {
 
 /// Check if a token looks like a file path (has a known extension or path separator).
 fn looks_like_file_path(token: &str) -> bool {
+    // GitHub Actions expression syntax fragments (`${{ env.X }}`) are not file paths.
+    // Tokens like `}}/api/health/ready"` contain `}}` from an expression closing
+    // delimiter and cannot be a valid filesystem path.
+    if token.contains("${{") || token.contains("}}") {
+        return false;
+    }
+
     const EXTENSIONS: &[&str] = &[
         ".js", ".ts", ".mjs", ".cjs", ".mts", ".cts", ".jsx", ".tsx", ".json", ".yaml", ".yml",
         ".toml",
@@ -998,6 +1005,17 @@ mod tests {
         assert!(!super::looks_like_file_path("webpack"));
         assert!(!super::looks_like_file_path("--mode"));
         assert!(!super::looks_like_file_path("production"));
+    }
+
+    #[test]
+    fn looks_like_file_path_github_actions_expression_not_file() {
+        // Tokens that are fragments of `${{ env.X }}/path` expressions contain
+        // `${{` or `}}` and must not be treated as file paths.
+        assert!(!super::looks_like_file_path(
+            r#""${{ env.ENVIRONMENT_URL }}/api/health/ready""#
+        ));
+        assert!(!super::looks_like_file_path("}}/api/health/ready\""));
+        assert!(!super::looks_like_file_path("${{ env.BASE_URL }}"));
     }
 
     // --- extract_config_arg tests ---
