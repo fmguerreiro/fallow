@@ -40,7 +40,11 @@ fn vitest_mocks_scoped_specifiers_not_flagged_in_workspace_monorepo() {
         .map(|d| d.package_name.as_str())
         .collect();
 
-    for specifier in &["@aws-sdk/__mocks__", "@supabase/__mocks__", "@sentry/__mocks__"] {
+    for specifier in &[
+        "@aws-sdk/__mocks__",
+        "@supabase/__mocks__",
+        "@sentry/__mocks__",
+    ] {
         assert!(
             !unlisted_names.contains(specifier),
             "{specifier} should not be flagged as an unlisted dependency in workspace monorepo, got: {unlisted_names:?}"
