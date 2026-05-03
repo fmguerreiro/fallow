@@ -393,6 +393,66 @@ jobs:
         }
     }
 
+    #[test]
+    fn jq_array_iterator_not_entry_file() {
+        // Regression: `jq -c '.[]'` and `jq -r '.[]'` in CI run blocks must not
+        // produce entry-file candidates. `'.[]'` is a jq array-iterator; globset
+        // rejects it as an empty character class `[]`.
+        let content = r#"
+jobs:
+  process:
+    steps:
+      - run: |
+          jq -c '.[]' /tmp/x.json | while read item; do echo "$item"; done
+          result=$(jq -r '.[]' data.json)
+"#;
+        let mut analysis = CiAnalysis::default();
+        extract_ci_signals(
+            content,
+            Path::new("/nonexistent"),
+            &FxHashMap::default(),
+            &mut analysis,
+        );
+        for path in &analysis.entry_files {
+            assert!(
+                !path.contains(".[]"),
+                "entry_files must not contain jq array-iterator fragments, got: {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn grep_perl_regex_fragment_not_entry_file() {
+        // Regression: `grep -oP '(?<=Module )\./[^ ]+(?= has finished with an error)'`
+        // in CI run blocks splits on whitespace into tokens including `)\./[^`.
+        // That fragment contains a backslash (`\.`) and an unclosed character class
+        // (`[^`) — neither is a valid file path.
+        let content = r"
+jobs:
+  deploy:
+    steps:
+      - run: |
+          grep -oP '(?<=Module )\./[^ ]+(?= has finished with an error)' deploy.log
+";
+        let mut analysis = CiAnalysis::default();
+        extract_ci_signals(
+            content,
+            Path::new("/nonexistent"),
+            &FxHashMap::default(),
+            &mut analysis,
+        );
+        for path in &analysis.entry_files {
+            assert!(
+                !path.contains(r"\./"),
+                "entry_files must not contain regex escape fragments, got: {path:?}"
+            );
+            assert!(
+                !path.contains("[^"),
+                "entry_files must not contain unclosed character class fragments, got: {path:?}"
+            );
+        }
+    }
+
     // ── helper tests ───────────────────────────────────────────────
 
     #[test]

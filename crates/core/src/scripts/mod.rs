@@ -350,6 +350,22 @@ fn looks_like_file_path(token: &str) -> bool {
         return false;
     }
 
+    // Backslash is not valid in Unix file paths; its presence indicates a regex
+    // escape sequence (e.g. `)\./[^` from `grep -oP '...\./...'`).
+    if token.contains('\\') {
+        return false;
+    }
+
+    // A `[` without a valid glob character class after it is a regex fragment,
+    // not a path. Reject empty classes `[]` and unclosed classes `[^...`.
+    if let Some(open) = token.find('[') {
+        match token[open + 1..].find(']') {
+            None => return false,
+            Some(0) => return false,
+            _ => {}
+        }
+    }
+
     const EXTENSIONS: &[&str] = &[
         ".js", ".ts", ".mjs", ".cjs", ".mts", ".cts", ".jsx", ".tsx", ".json", ".yaml", ".yml",
         ".toml",
@@ -1016,6 +1032,35 @@ mod tests {
         ));
         assert!(!super::looks_like_file_path("}}/api/health/ready\""));
         assert!(!super::looks_like_file_path("${{ env.BASE_URL }}"));
+    }
+
+    #[test]
+    fn looks_like_file_path_jq_array_iterator_not_file() {
+        // `'.[]'` is extracted from `jq -c '.[]' /tmp/x.json` (or `jq -r '.[]'`).
+        // The `[` is immediately followed by `]` (empty character class), which
+        // globset rejects; it is a jq array-iterator, not a filesystem path.
+        assert!(!super::looks_like_file_path("'.[]'"));
+        assert!(!super::looks_like_file_path(".[]"));
+    }
+
+    #[test]
+    fn looks_like_file_path_regex_fragment_not_file() {
+        // `)\./[^` is a whitespace-split fragment of the Perl regex
+        // `(?<=Module )\./[^ ]+(?= has finished with an error)` passed to
+        // `grep -oP`. The backslash (`\.`) makes it an invalid Unix path;
+        // the `[^` is an unclosed negated character class globset rejects.
+        assert!(!super::looks_like_file_path(r")\./[^"));
+        // Also verify the individual rejection rules:
+        assert!(!super::looks_like_file_path(r"path\/with\backslash"));
+        assert!(!super::looks_like_file_path("prefix/[^unclosed"));
+    }
+
+    #[test]
+    fn looks_like_file_path_valid_nextjs_dynamic_route() {
+        // Next.js dynamic route segments like `app/[id]/page.tsx` must still
+        // pass — `[id]` has one non-`]` character between the brackets.
+        assert!(super::looks_like_file_path("app/[id]/page.tsx"));
+        assert!(super::looks_like_file_path("pages/[...slug].ts"));
     }
 
     // --- extract_config_arg tests ---
