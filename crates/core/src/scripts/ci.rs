@@ -453,7 +453,10 @@ jobs:
         }
         // Positive: the legitimate path on the same line is still captured.
         assert!(
-            analysis.entry_files.iter().any(|p| p.contains("deploy.log")),
+            analysis
+                .entry_files
+                .iter()
+                .any(|p| p.contains("deploy.log")),
             "entry_files should still include legitimate paths from the same shell line, got: {:?}",
             analysis.entry_files
         );
