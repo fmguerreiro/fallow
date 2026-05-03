@@ -365,6 +365,34 @@ jobs:
         assert!(packages.contains("@cyclonedx/cyclonedx-npm"));
     }
 
+    #[test]
+    fn github_actions_expression_fragments_not_entry_files() {
+        // Regression: tokens like `}}/api/health/ready"` produced by splitting
+        // `"${{ env.ENVIRONMENT_URL }}/api/health/ready"` on whitespace contain
+        // `}}` and must not be recorded as entry file paths.
+        let content = r#"
+jobs:
+  health-check:
+    steps:
+      - run: |
+          RESPONSE_CODE=$(curl -s -o "$TMPFILE" -w "%{http_code}" -m 15 "${{ env.ENVIRONMENT_URL }}/api/health/ready")
+          echo "$RESPONSE_CODE"
+"#;
+        let mut analysis = CiAnalysis::default();
+        extract_ci_signals(
+            content,
+            Path::new("/nonexistent"),
+            &FxHashMap::default(),
+            &mut analysis,
+        );
+        for path in &analysis.entry_files {
+            assert!(
+                !path.contains("${{") && !path.contains("}}"),
+                "entry_files must not contain GitHub Actions expression fragments, got: {path:?}"
+            );
+        }
+    }
+
     // ── helper tests ───────────────────────────────────────────────
 
     #[test]
