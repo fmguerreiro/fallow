@@ -1064,6 +1064,8 @@ fn run_plugins(
         result.virtual_module_prefixes.iter().cloned().collect();
     let mut seen_generated: rustc_hash::FxHashSet<String> =
         result.generated_import_patterns.iter().cloned().collect();
+    let mut seen_suffixes: rustc_hash::FxHashSet<String> =
+        result.virtual_package_suffixes.iter().cloned().collect();
     for (ws_result, ws_prefix) in ws_results {
         // Prefix helper: workspace-relative patterns need the workspace prefix
         // to be matchable from the monorepo root. But patterns that are already
@@ -1132,6 +1134,14 @@ fn run_plugins(
             if !seen_generated.contains(&pattern) {
                 seen_generated.insert(pattern.clone());
                 result.generated_import_patterns.push(pattern);
+            }
+        }
+        // Virtual package suffixes (e.g., Vitest /__mocks__) are suffix
+        // matches on package names, not file paths — no workspace prefix needed.
+        for suffix in ws_result.virtual_package_suffixes {
+            if !seen_suffixes.contains(&suffix) {
+                seen_suffixes.insert(suffix.clone());
+                result.virtual_package_suffixes.push(suffix);
             }
         }
         // Path aliases from workspace plugins (e.g., SvelteKit $lib/ → src/lib).

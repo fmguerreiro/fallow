@@ -22,6 +22,32 @@ fn vitest_mocks_specifiers_not_flagged_as_unlisted_dep() {
     );
 }
 
+// ── Vitest __mocks__ virtual specifiers in monorepo workspace ─────
+
+#[test]
+fn vitest_mocks_scoped_specifiers_not_flagged_in_workspace_monorepo() {
+    // Vitest is only in apps/mrv/package.json (workspace), not root package.json.
+    // The virtual_package_suffixes contributed by VitestPlugin must be merged from
+    // the workspace plugin result into the root aggregated result, otherwise
+    // @scope/__mocks__ specifiers are still flagged as unlisted dependencies.
+    let root = fixture_path("vitest-mocks-workspace");
+    let config = create_config(root);
+    let results = fallow_core::analyze(&config).expect("analysis should succeed");
+
+    let unlisted_names: Vec<&str> = results
+        .unlisted_dependencies
+        .iter()
+        .map(|d| d.package_name.as_str())
+        .collect();
+
+    for specifier in &["@aws-sdk/__mocks__", "@supabase/__mocks__", "@sentry/__mocks__"] {
+        assert!(
+            !unlisted_names.contains(specifier),
+            "{specifier} should not be flagged as an unlisted dependency in workspace monorepo, got: {unlisted_names:?}"
+        );
+    }
+}
+
 // ── Unlisted dependencies integration ──────────────────────────
 
 #[test]
