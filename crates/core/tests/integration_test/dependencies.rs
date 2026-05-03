@@ -2,6 +2,26 @@ use fallow_config::{FallowConfig, OutputFormat, RulesConfig};
 
 use super::common::{create_config, fixture_path};
 
+// ── Vitest __mocks__ virtual specifiers ───────────────────────
+
+#[test]
+fn vitest_mocks_specifiers_not_flagged_as_unlisted_dep() {
+    let root = fixture_path("vitest-mocks-virtual");
+    let config = create_config(root);
+    let results = fallow_core::analyze(&config).expect("analysis should succeed");
+
+    let unlisted_names: Vec<&str> = results
+        .unlisted_dependencies
+        .iter()
+        .map(|d| d.package_name.as_str())
+        .collect();
+
+    assert!(
+        !unlisted_names.contains(&"@aws-sdk/__mocks__"),
+        "@aws-sdk/__mocks__ should not be flagged as an unlisted dependency, got: {unlisted_names:?}"
+    );
+}
+
 // ── Unlisted dependencies integration ──────────────────────────
 
 #[test]
