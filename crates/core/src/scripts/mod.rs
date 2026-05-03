@@ -357,12 +357,14 @@ fn looks_like_file_path(token: &str) -> bool {
     }
 
     // A `[` without a valid glob character class after it is a regex fragment,
-    // not a path. Reject empty classes `[]` and unclosed classes `[^...`.
+    // not a path. A valid class needs at least one char before `]`, e.g.
+    // `app/[id]/page.tsx` -> close_offset = 2. Reject `[]` (close_offset = 0)
+    // and `[^...` with no closing `]` at all (close_offset = None).
     if let Some(open) = token.find('[') {
-        match token[open + 1..].find(']') {
-            None => return false,
-            Some(0) => return false,
-            _ => {}
+        let after_open = &token[open + 1..];
+        let close_offset = after_open.find(']');
+        if !matches!(close_offset, Some(offset) if offset > 0) {
+            return false;
         }
     }
 
@@ -1036,22 +1038,25 @@ mod tests {
 
     #[test]
     fn looks_like_file_path_jq_array_iterator_not_file() {
-        // `'.[]'` is extracted from `jq -c '.[]' /tmp/x.json` (or `jq -r '.[]'`).
-        // The `[` is immediately followed by `]` (empty character class), which
-        // globset rejects; it is a jq array-iterator, not a filesystem path.
-        assert!(!super::looks_like_file_path("'.[]'"));
+        // `.[]` is extracted from `jq -c '.[]' /tmp/x.json` (or `jq -r '.[]'`).
+        // `[` is immediately followed by `]` (empty character class), which
+        // is a jq array-iterator, not a filesystem path. The empty-class guard
+        // fires here. The quoted form `'.[]'` is also rejected, but only by
+        // the trailing extension/separator check — we still assert it as a
+        // sanity guard so noisy quoted shell tokens never reach globset.
         assert!(!super::looks_like_file_path(".[]"));
+        assert!(!super::looks_like_file_path("'.[]'"));
     }
 
     #[test]
     fn looks_like_file_path_regex_fragment_not_file() {
         // `)\./[^` is a whitespace-split fragment of the Perl regex
         // `(?<=Module )\./[^ ]+(?= has finished with an error)` passed to
-        // `grep -oP`. The backslash (`\.`) makes it an invalid Unix path;
-        // the `[^` is an unclosed negated character class globset rejects.
+        // `grep -oP`. Two distinct guards reject it: the backslash and the
+        // unclosed `[^`. We assert the combined fragment plus each guard
+        // independently so a regression in either rule is caught.
         assert!(!super::looks_like_file_path(r")\./[^"));
-        // Also verify the individual rejection rules:
-        assert!(!super::looks_like_file_path(r"path\/with\backslash"));
+        assert!(!super::looks_like_file_path(r"path\with\backslash"));
         assert!(!super::looks_like_file_path("prefix/[^unclosed"));
     }
 
