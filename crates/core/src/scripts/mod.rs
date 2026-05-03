@@ -341,8 +341,15 @@ fn is_env_assignment(token: &str) -> bool {
     })
 }
 
-/// Check if a token looks like a file path (has a known extension or path separator).
-fn looks_like_file_path(token: &str) -> bool {
+/// Reject tokens that contain syntax which cannot be a valid Unix filesystem
+/// path. Used as a pre-filter before patterns reach globset compilation so
+/// shell/regex fragments extracted from CI run blocks (jq array iterators,
+/// Perl regexes, GHA expressions) never produce 'invalid entry pattern'
+/// warnings. Returns `false` only when the token is *definitely not* a path;
+/// returns `true` for ambiguous tokens like bare names without extensions
+/// (which `looks_like_file_path` would reject but a path-arg consumer should
+/// still see — e.g. `deploy.log`, `Makefile`).
+fn could_be_file_path(token: &str) -> bool {
     // GitHub Actions expression syntax fragments (`${{ env.X }}`) are not file paths.
     // Tokens like `}}/api/health/ready"` contain `}}` from an expression closing
     // delimiter and cannot be a valid filesystem path.
@@ -366,6 +373,17 @@ fn looks_like_file_path(token: &str) -> bool {
         if !matches!(close_offset, Some(offset) if offset > 0) {
             return false;
         }
+    }
+
+    true
+}
+
+/// Check if a token looks like a file path (has a known extension or path separator).
+/// Stricter than `could_be_file_path` — used by CI command extractors to recognize
+/// definitely-path-shaped tokens.
+fn looks_like_file_path(token: &str) -> bool {
+    if !could_be_file_path(token) {
+        return false;
     }
 
     const EXTENSIONS: &[&str] = &[

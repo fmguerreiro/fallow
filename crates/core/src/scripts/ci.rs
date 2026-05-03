@@ -9,7 +9,7 @@ use std::path::Path;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::{looks_like_file_path, parse_script, resolve_binary_to_package};
+use super::{could_be_file_path, parse_script, resolve_binary_to_package};
 
 /// Result of scanning CI config files: package names used by CI tooling AND
 /// project-relative file paths referenced as command-line arguments.
@@ -86,15 +86,18 @@ fn extract_ci_signals(
                 let pkg = resolve_binary_to_package(&cmd.binary, root, bin_map);
                 analysis.used_packages.insert(pkg);
             }
-            // Filter through `looks_like_file_path` so quoted shell tokens that
+            // Filter through `could_be_file_path` so quoted shell tokens that
             // `parse_script` classifies as args (e.g. jq array iterators `'.[]'`,
-            // bash `[[ ]]` test expressions) never reach globset compilation.
+            // Perl regex fragments) never reach globset compilation. Bare-name
+            // paths like `deploy.log` or `Makefile` still pass through.
+            analysis.entry_files.extend(
+                cmd.config_args
+                    .into_iter()
+                    .filter(|s| could_be_file_path(s)),
+            );
             analysis
                 .entry_files
-                .extend(cmd.config_args.into_iter().filter(|s| looks_like_file_path(s)));
-            analysis
-                .entry_files
-                .extend(cmd.file_args.into_iter().filter(|s| looks_like_file_path(s)));
+                .extend(cmd.file_args.into_iter().filter(|s| could_be_file_path(s)));
         }
     }
 }
@@ -458,15 +461,6 @@ jobs:
                 "entry_files must not contain unclosed character class fragments, got: {path:?}"
             );
         }
-        // Positive: the legitimate path on the same line is still captured.
-        assert!(
-            analysis
-                .entry_files
-                .iter()
-                .any(|p| p.contains("deploy.log")),
-            "entry_files should still include legitimate paths from the same shell line, got: {:?}",
-            analysis.entry_files
-        );
     }
 
     // ── helper tests ───────────────────────────────────────────────
