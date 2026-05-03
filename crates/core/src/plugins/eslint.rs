@@ -150,9 +150,13 @@ fn extract_eslint_config(
     // e.g. eslint.config.js imports @sveltejs/eslint-config, which internally
     // imports typescript-eslint, eslint-plugin-svelte, @eslint/js, all peer deps
     // that the host project must install.
+    //
+    // We use the full import specifier (including subpath, e.g. `@scope/pkg/next`)
+    // so that subpath exports are resolved correctly, and we walk up the directory
+    // tree to find packages hoisted to the monorepo root node_modules.
     for imp in &imports {
         let pkg_name = crate::resolve::extract_package_name(imp);
-        if let Some((entry_source, entry_path)) = read_package_entry(root, &pkg_name) {
+        if let Some((entry_source, entry_path)) = read_package_entry_for_specifier(root, imp, &pkg_name) {
             let nested = config_parser::extract_imports(&entry_source, &entry_path);
             for nested_imp in &nested {
                 result
@@ -319,37 +323,141 @@ fn push_setup_file_once(result: &mut PluginResult, path: PathBuf) {
     }
 }
 
-/// Read a package's entry point source from node_modules.
+/// Find a package directory by walking up from `start` through ancestor directories,
+/// checking `node_modules/<pkg_name>` at each level.
 ///
-/// Resolves the package's `module` or `main` field from its `package.json`,
-/// reads the entry file, and returns its source and path. Returns `None` if
-/// the package is not found or the entry file is unreadable.
-fn read_package_entry(root: &Path, pkg_name: &str) -> Option<(String, std::path::PathBuf)> {
-    let pkg_dir = root.join("node_modules").join(pkg_name);
+/// This mirrors Node.js module resolution and handles monorepos where dependencies
+/// are hoisted to the monorepo root rather than installed per-workspace.
+fn find_package_dir(start: &Path, pkg_name: &str) -> Option<PathBuf> {
+    let mut dir = start;
+    loop {
+        let candidate = dir.join("node_modules").join(pkg_name);
+        if candidate.join("package.json").exists() {
+            return Some(candidate);
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// Read a package's entry point source from node_modules, walking up the directory
+/// tree to find it (handles hoisted deps in monorepos).
+///
+/// When `specifier` contains a subpath (e.g., `@scope/pkg/next`), resolves that
+/// subpath via the package's `exports` map, falling back to treating it as a
+/// relative file path within the package directory.
+///
+/// Returns `None` if the package is not found or the entry file is unreadable.
+fn read_package_entry_for_specifier(
+    root: &Path,
+    specifier: &str,
+    pkg_name: &str,
+) -> Option<(String, PathBuf)> {
+    let pkg_dir = find_package_dir(root, pkg_name)?;
     let pkg_json_str = std::fs::read_to_string(pkg_dir.join("package.json")).ok()?;
     let pkg_json: serde_json::Value = serde_json::from_str(&pkg_json_str).ok()?;
 
-    // Resolve entry point: "exports"."." → "module" → "main" → "index.js"
-    let entry_rel = pkg_json
-        .get("exports")
-        .and_then(|e| {
-            // "exports": "./index.js" (string shorthand)
-            e.as_str().or_else(|| {
-                // "exports": { ".": "./index.js" } or { ".": { "import": "./index.mjs" } }
-                e.get(".").and_then(|dot| {
-                    dot.as_str()
-                        .or_else(|| dot.get("import").and_then(|v| v.as_str()))
-                        .or_else(|| dot.get("default").and_then(|v| v.as_str()))
-                })
-            })
-        })
-        .or_else(|| pkg_json.get("module").and_then(|v| v.as_str()))
-        .or_else(|| pkg_json.get("main").and_then(|v| v.as_str()))
-        .unwrap_or("index.js");
+    // Extract the subpath from the specifier (e.g., "@scope/pkg/next" → "./next").
+    // If there is no subpath the specifier equals the package name and we use ".".
+    let subpath_key = if specifier.len() > pkg_name.len() {
+        let raw = &specifier[pkg_name.len()..]; // e.g., "/next"
+        format!(".{raw}") // e.g., "./next"
+    } else {
+        ".".to_string()
+    };
 
+    let entry_rel = resolve_package_entry(&pkg_json, &subpath_key, &pkg_dir);
     let entry_path = pkg_dir.join(entry_rel);
     let source = std::fs::read_to_string(&entry_path).ok()?;
     Some((source, entry_path))
+}
+
+/// Resolve a package entry path from its `package.json` for the given subpath key.
+///
+/// Subpath key is `"."` for the main entry or `"./subpath"` for named subpaths.
+/// Falls back to `module` → `main` → `index.js` when no exports map is present.
+/// For non-root subpaths without an exports map entry, tries the key as a relative
+/// file path within the package directory.
+fn resolve_package_entry(pkg_json: &serde_json::Value, subpath_key: &str, pkg_dir: &Path) -> String {
+    if let Some(exports) = pkg_json.get("exports") {
+        if let Some(rel) = resolve_exports_subpath(exports, subpath_key) {
+            return rel;
+        }
+    }
+
+    if subpath_key == "." {
+        // Main entry: module → main → index.js
+        if let Some(v) = pkg_json.get("module").and_then(|v| v.as_str()) {
+            return v.to_string();
+        }
+        if let Some(v) = pkg_json.get("main").and_then(|v| v.as_str()) {
+            return v.to_string();
+        }
+        return "index.js".to_string();
+    }
+
+    // For subpath keys like "./next", strip the leading "./" and try as a direct
+    // file within the package directory. This handles packages that expose
+    // sub-files without an exports map (e.g., `eslint-config-foo/next` → `next.js`).
+    let bare = subpath_key.strip_prefix("./").unwrap_or(subpath_key);
+    // Try with common extensions if the bare name has no extension.
+    if std::path::Path::new(bare).extension().is_some() {
+        return bare.to_string();
+    }
+    for ext in &["js", "mjs", "cjs"] {
+        let candidate = format!("{bare}.{ext}");
+        if pkg_dir.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    // Last resort: return bare and let the caller's read_to_string fail gracefully.
+    bare.to_string()
+}
+
+/// Resolve a subpath key against a package's `exports` field value.
+///
+/// Handles three export formats:
+/// - String shorthand: `"exports": "./index.js"`
+/// - Object with dot key: `"exports": { ".": "./index.js" }`
+/// - Condition object: `"exports": { ".": { "import": "./index.mjs", "default": "./index.cjs" } }`
+/// - Subpath exports: `"exports": { "./next": "./next.js" }`
+fn resolve_exports_subpath(exports: &serde_json::Value, subpath_key: &str) -> Option<String> {
+    if subpath_key == "." {
+        // String shorthand: "exports": "./index.js"
+        if let Some(s) = exports.as_str() {
+            return Some(s.to_string());
+        }
+        // Object: look up "."
+        if let Some(dot) = exports.get(".") {
+            return resolve_condition_object(dot);
+        }
+        return None;
+    }
+
+    // Named subpath: look up the key in the exports object.
+    if let Some(entry) = exports.get(subpath_key) {
+        return resolve_condition_object(entry);
+    }
+
+    None
+}
+
+/// Resolve a condition object (or plain string) to a file path string.
+fn resolve_condition_object(value: &serde_json::Value) -> Option<String> {
+    if let Some(s) = value.as_str() {
+        return Some(s.to_string());
+    }
+    // Prefer "import", then "default", then "require" for ESM-first packages.
+    for key in &["import", "default", "require"] {
+        if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+fn read_package_entry(root: &Path, pkg_name: &str) -> Option<(String, PathBuf)> {
+    read_package_entry_for_specifier(root, pkg_name, pkg_name)
 }
 
 /// Resolve `ESLint` plugin short name to full package name.
@@ -654,6 +762,133 @@ mod tests {
         let (source, path) = super::read_package_entry(root, "modern-pkg").unwrap();
         assert!(source.contains("some-dep"));
         assert!(path.ends_with("dist/index.mjs"));
+    }
+
+    // ── Workspace-package flat-config dep tracing ──────────────────
+
+    /// Regression test: apps/foo/eslint.config.mjs imports @scope/eslint-config,
+    /// which itself imports eslint-plugin-react. Both packages list eslint-plugin-react
+    /// in devDependencies. Fallow must NOT flag eslint-plugin-react as unused-devdep.
+    ///
+    /// The shared config lives at packages/eslint-config in the monorepo root, but
+    /// its node_modules symlink is hoisted to monorepo-root/node_modules. The workspace
+    /// package's eslint.config.mjs is analysed with root=apps/foo, so read_package_entry
+    /// must walk up to the monorepo root to find the package.
+    #[test]
+    fn flat_config_workspace_package_dep_chain_traced() {
+        // Set up a minimal monorepo layout:
+        //   <root>/
+        //     node_modules/@scope/eslint-config/
+        //       package.json  (main: "index.js")
+        //       index.js      (imports eslint-plugin-react)
+        //     apps/foo/
+        //       eslint.config.mjs  (imports @scope/eslint-config)
+        let dir = tempfile::tempdir().unwrap();
+        let monorepo_root = dir.path();
+
+        // Shared config package in hoisted node_modules
+        let shared_pkg_dir = monorepo_root.join("node_modules/@scope/eslint-config");
+        std::fs::create_dir_all(&shared_pkg_dir).unwrap();
+        std::fs::write(
+            shared_pkg_dir.join("package.json"),
+            r#"{"name": "@scope/eslint-config", "main": "index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            shared_pkg_dir.join("index.js"),
+            r"
+                import reactPlugin from 'eslint-plugin-react';
+                import storybook from 'eslint-plugin-storybook';
+                export default [{ plugins: { react: reactPlugin } }];
+            ",
+        )
+        .unwrap();
+
+        // App workspace with its own eslint.config.mjs
+        let app_dir = monorepo_root.join("apps/foo");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let eslint_config_path = app_dir.join("eslint.config.mjs");
+        let source = r"
+            import sharedConfig from '@scope/eslint-config';
+            export default [...sharedConfig];
+        ";
+        std::fs::write(&eslint_config_path, source).unwrap();
+
+        let plugin = EslintPlugin;
+        // root = apps/foo — mirrors how run_workspace_fast calls resolve_config
+        let result = plugin.resolve_config(&eslint_config_path, source, &app_dir);
+
+        let deps = &result.referenced_dependencies;
+        assert!(
+            deps.contains(&"@scope/eslint-config".to_string()),
+            "direct workspace package import must be listed as used: {deps:?}"
+        );
+        assert!(
+            deps.contains(&"eslint-plugin-react".to_string()),
+            "transitive dep from workspace config package must not be flagged unused: {deps:?}"
+        );
+        assert!(
+            deps.contains(&"eslint-plugin-storybook".to_string()),
+            "second transitive dep from workspace config package must not be flagged unused: {deps:?}"
+        );
+    }
+
+    /// When the import uses a subpath (e.g. `@scope/eslint-config/next`),
+    /// the /next file's imports must be discovered, not the package's main entry.
+    #[test]
+    fn flat_config_workspace_package_subpath_dep_chain_traced() {
+        let dir = tempfile::tempdir().unwrap();
+        let monorepo_root = dir.path();
+
+        let shared_pkg_dir = monorepo_root.join("node_modules/@scope/eslint-config");
+        std::fs::create_dir_all(&shared_pkg_dir).unwrap();
+        std::fs::write(
+            shared_pkg_dir.join("package.json"),
+            r#"{"name": "@scope/eslint-config", "main": "index.js"}"#,
+        )
+        .unwrap();
+        // main entry does NOT import eslint-plugin-react
+        std::fs::write(
+            shared_pkg_dir.join("index.js"),
+            r"export default [];",
+        )
+        .unwrap();
+        // /next subpath DOES import eslint-plugin-react
+        std::fs::write(
+            shared_pkg_dir.join("next.js"),
+            r"
+                import nextConfig from 'eslint-config-next';
+                import reactPlugin from 'eslint-plugin-react';
+                export default [{ plugins: { react: reactPlugin }, ...nextConfig }];
+            ",
+        )
+        .unwrap();
+
+        let app_dir = monorepo_root.join("apps/foo");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let eslint_config_path = app_dir.join("eslint.config.mjs");
+        let source = r"
+            import nextConfig from '@scope/eslint-config/next';
+            export default [...nextConfig];
+        ";
+        std::fs::write(&eslint_config_path, source).unwrap();
+
+        let plugin = EslintPlugin;
+        let result = plugin.resolve_config(&eslint_config_path, source, &app_dir);
+
+        let deps = &result.referenced_dependencies;
+        assert!(
+            deps.contains(&"@scope/eslint-config".to_string()),
+            "scoped package name must be listed: {deps:?}"
+        );
+        assert!(
+            deps.contains(&"eslint-plugin-react".to_string()),
+            "transitive dep via subpath import must be traced: {deps:?}"
+        );
+        assert!(
+            deps.contains(&"eslint-config-next".to_string()),
+            "transitive dep via subpath import must be traced: {deps:?}"
+        );
     }
 
     // ── ESLint resolver name resolution ────────────────────────────
